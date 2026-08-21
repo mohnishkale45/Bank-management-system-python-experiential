@@ -1,0 +1,63 @@
+import json, os
+from datetime import datetime
+
+FILE = "accounts.json"
+accounts = json.load(open(FILE)) if os.path.exists(FILE) else {}
+
+def save():
+    json.dump(accounts, open(FILE, "w"), indent=2)
+
+def create():
+    acc = input("Account no: ")
+    accounts[acc] = {"name": input("Name: "), "balance": float(input("Initial deposit: ")), "history": []}
+    save()
+
+def deposit():
+    acc = input("Account no: ")
+    amt = float(input("Amount: "))
+    accounts[acc]["balance"] += amt
+    accounts[acc]["history"].append(f"Deposit {amt} - {datetime.now()}")
+    save()
+
+def withdraw():
+    acc = input("Account no: ")
+    amt = float(input("Amount: "))
+    if amt > accounts[acc]["balance"]:
+        print("Insufficient balance")
+        return
+    accounts[acc]["balance"] -= amt
+    accounts[acc]["history"].append(f"Withdraw {amt} - {datetime.now()}")
+    save()
+
+def transfer():
+    a, b = input("From: "), input("To: ")
+    amt = float(input("Amount: "))
+    if amt > accounts[a]["balance"]:
+        print("Insufficient balance")
+        return
+    accounts[a]["balance"] -= amt
+    accounts[b]["balance"] += amt
+    accounts[a]["history"].append(f"Sent {amt} to {b}")
+    accounts[b]["history"].append(f"Received {amt} from {a}")
+    save()
+
+def balance():
+    acc = input("Account no: ")
+    print(accounts[acc]["name"], "-", accounts[acc]["balance"])
+
+def statement():
+    acc = input("Account no: ")
+    with open(f"statement_{acc}.txt", "w") as f:
+        f.write(f"{accounts[acc]['name']} | Balance: {accounts[acc]['balance']}\n")
+        for h in accounts[acc]["history"]:
+            f.write(h + "\n")
+    print("Statement saved")
+
+menu = {"1": create, "2": deposit, "3": withdraw, "4": transfer, "5": balance, "6": statement}
+
+while True:
+    print("\n1.Create 2.Deposit 3.Withdraw 4.Transfer 5.Balance 6.Statement 7.Exit")
+    ch = input("Choice: ")
+    if ch == "7":
+        break
+    menu.get(ch, lambda: print("Invalid"))()

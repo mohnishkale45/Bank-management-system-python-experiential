@@ -1,0 +1,231 @@
+"""Banking Management System - Python + SQLite
+Course: Python Programming Language (N-PCCCM304P)
+Features: create account, PIN login, deposit, withdraw, transfer,
+          balance, transaction history, statement generation.
+"""
+import sqlite3
+import hashlib
+from datetime import datetime
+
+DB_FILE = "bank.db"
+MIN_BALANCE = 0.0          # minimum balance that must remain after a withdrawal
+FIRST_ACC_NO = 1001
+
+conn = sqlite3.connect(DB_FILE)
+cur = conn.cursor()
+
+
+# ---------------------------------------------------------------- database
+def init_db():
+    cur.execute("""CREATE TABLE IF NOT EXISTS accounts
+                   (acc_no INTEGER PRIMARY KEY, name TEXT,
+                    pin_hash TEXT, balance REAL)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS transactions
+                   (txn_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    acc_no INTEGER, type TEXT, amount REAL,
+                    balance REAL, timestamp TEXT,
+                    FOREIGN KEY (acc_no) REFERENCES accounts(acc_no))""")
+    conn.commit()
+
+
+def hash_pin(pin):
+    """Never store the PIN in plain text - store its SHA-256 hash."""
+    return hashlib.sha256(pin.encode()).hexdigest()
+
+
+def get_balance(acc_no):
+    cur.execute("SELECT balance FROM accounts WHERE acc_no=?", (acc_no,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def account_exists(acc_no):
+    return get_balance(acc_no) is not None
+
+
+def log_transaction(acc_no, txn_type, amount, balance):
+    cur.execute("INSERT INTO transactions (acc_no, type, amount, balance, timestamp)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (acc_no, txn_type, amount, balance,
+                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+
+
+# -------------------------------------------------------------- operations
+def create_account(name, pin, initial_deposit):
+    if not name.strip():
+        return None, "Name cannot be empty."
+    if not (pin.isdigit() and len(pin) == 4):
+        return None, "PIN must be exactly 4 digits."
+    if initial_deposit < 0:
+        return None, "Initial deposit cannot be negative."
+
+    # duplicate-account check: same name + same PIN is treated as a duplicate
+    cur.execute("SELECT 1 FROM accounts WHERE name=? AND pin_hash=?",
+                (name.strip(), hash_pin(pin)))
+    if cur.fetchone():
+        return None, "Duplicate account already exists."
+
+    cur.execute("SELECT MAX(acc_no) FROM accounts")
+    last = cur.fetchone()[0]
+    acc_no = FIRST_ACC_NO if last is None else last + 1
+    cur.execute("INSERT INTO accounts VALUES (?, ?, ?, ?)",
+                (acc_no, name.strip(), hash_pin(pin), initial_deposit))
+    if initial_deposit > 0:
+        log_transaction(acc_no, "Deposit", initial_deposit, initial_deposit)
+    conn.commit()
+    return acc_no, "Account created successfully! Account No.: %d" % acc_no
+
+
+def login(acc_no, pin):
+    cur.execute("SELECT 1 FROM accounts WHERE acc_no=? AND pin_hash=?",
+                (acc_no, hash_pin(pin)))
+    return cur.fetchone() is not None
+
+
+def deposit(acc_no, amount):
+    if amount <= 0:
+        return "Invalid amount. Must be greater than zero."
+    balance = get_balance(acc_no) + amount
+    cur.execute("UPDATE accounts SET balance=? WHERE acc_no=?", (balance, acc_no))
+    log_transaction(acc_no, "Deposit", amount, balance)
+    conn.commit()
+    return "Deposit successful. New balance: %.2f" % balance
+
+
+def withdraw(acc_no, amount):
+    if amount <= 0:
+        return "Invalid amount. Must be greater than zero."
+    balance = get_balance(acc_no)
+    if balance - amount < MIN_BALANCE:
+        return "Insufficient funds"
+    balance -= amount
+    cur.execute("UPDATE accounts SET balance=? WHERE acc_no=?", (balance, acc_no))
+    log_transaction(acc_no, "Withdrawal", amount, balance)
+    conn.commit()
+    return "Withdrawal successful. New balance: %.2f" % balance
+
+
+def transfer(sender, receiver, amount):
+    if amount <= 0:
+        return "Invalid amount. Must be greater than zero."
+    if sender == receiver:
+        return "Cannot transfer to the same account."
+    if not account_exists(receiver):
+        return "Recipient account not found."
+    s_bal = get_balance(sender)
+    if s_bal - amount < MIN_BALANCE:
+        return "Insufficient funds"
+    r_bal = get_balance(receiver)
+    try:
+        s_bal -= amount
+        r_bal += amount
+        cur.execute("UPDATE accounts SET balance=? WHERE acc_no=?", (s_bal, sender))
+        cur.execute("UPDATE accounts SET balance=? WHERE acc_no=?", (r_bal, receiver))
+        log_transaction(sender, "Transfer Out", amount, s_bal)
+        log_transaction(receiver, "Transfer In", amount, r_bal)
+        conn.commit()          # both sides saved together as ONE transaction
+    except sqlite3.Error as e:
+        conn.rollback()        # undo everything if anything fails
+        return "Transfer failed: %s" % e
+    return "Transfer successful. New balance: %.2f" % s_bal
+
+
+def get_history(acc_no):
+    cur.execute("SELECT type, amount, balance, timestamp FROM transactions"
+                " WHERE acc_no=? ORDER BY txn_id", (acc_no,))
+    return cur.fetchall()
+
+
+def view_history(acc_no):
+    rows = get_history(acc_no)
+    if not rows:
+        print("No transactions yet.")
+        return
+    print("%-4s %-14s %-10s %-10s %s" % ("No", "Type", "Amount", "Balance", "Time"))
+    for i, (t, a, b, ts) in enumerate(rows, 1):
+        print("%-4d %-14s %-10.2f %-10.2f %s" % (i, t, a, b, ts))
+
+
+def generate_statement(acc_no):
+    cur.execute("SELECT name, balance FROM accounts WHERE acc_no=?", (acc_no,))
+    name, balance = cur.fetchone()
+    filename = "statement_%d.txt" % acc_no
+    with open(filename, "w") as f:
+        f.write("ACCOUNT STATEMENT\n" + "=" * 55 + "\n")
+        f.write("Account No : %d\nName       : %s\n" % (acc_no, name))
+        f.write("Generated  : %s\n" % datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        f.write("-" * 55 + "\n")
+        f.write("%-4s %-14s %-10s %-10s\n" % ("No", "Type", "Amount", "Balance"))
+        for i, (t, a, b, ts) in enumerate(get_history(acc_no), 1):
+            f.write("%-4d %-14s %-10.2f %-10.2f %s\n" % (i, t, a, b, ts))
+        f.write("-" * 55 + "\nClosing balance: %.2f\n" % balance)
+    return "Statement generated: " + filename
+
+
+# -------------------------------------------------------------- user input
+def read_amount(prompt):
+    try:
+        return float(input(prompt))
+    except ValueError:
+        return -1              # treated as invalid by the operations
+
+
+def read_int(prompt):
+    try:
+        return int(input(prompt))
+    except ValueError:
+        return -1
+
+
+def account_menu(acc_no):
+    while True:
+        print("\n1.Deposit  2.Withdraw  3.Transfer  4.View Balance")
+        print("5.Transaction History  6.Generate Statement  7.Logout")
+        choice = input("Enter option: ").strip()
+        if choice == "1":
+            print(deposit(acc_no, read_amount("Amount: ")))
+        elif choice == "2":
+            print(withdraw(acc_no, read_amount("Amount: ")))
+        elif choice == "3":
+            to = read_int("Transfer To (Account No.): ")
+            print(transfer(acc_no, to, read_amount("Amount: ")))
+        elif choice == "4":
+            print("Current balance: %.2f" % get_balance(acc_no))
+        elif choice == "5":
+            view_history(acc_no)
+        elif choice == "6":
+            print(generate_statement(acc_no))
+        elif choice == "7":
+            break
+        else:
+            print("Invalid option.")
+
+
+def main():
+    init_db()
+    while True:
+        print("\n===== BANKING MANAGEMENT SYSTEM =====")
+        print("1. Create Account\n2. Login\n3. Exit")
+        choice = input("Enter option: ").strip()
+        if choice == "1":
+            name = input("Name: ")
+            pin = input("Set 4-digit PIN: ")
+            dep = read_amount("Initial deposit: ")
+            print(create_account(name, pin, dep)[1])
+        elif choice == "2":
+            acc_no = read_int("Account No.: ")
+            pin = input("PIN: ")
+            if login(acc_no, pin):
+                account_menu(acc_no)
+            else:
+                print("Invalid account number or PIN.")
+        elif choice == "3":
+            print("Thank you for banking with us!")
+            break
+        else:
+            print("Invalid option.")
+    conn.close()
+
+
+if __name__ == "__main__":
+    main()
